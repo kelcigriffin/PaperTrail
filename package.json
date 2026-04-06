@@ -30,10 +30,12 @@
   },
   "config": {
     "forge": {
-      "packagerConfig": {},
+      "packagerConfig": {"icon": "assets/icon"},
       "makers": [
         {
-          "name": "@electron-forge/maker-squirrel"
+          "name": "@electron-forge/maker-squirrel",
+          "config": { "setupIcon": "assets/icon.ico"}
+
         },
         {
           "name": "@electron-forge/maker-zip",
@@ -48,25 +50,7 @@
         {
           "name": "@electron-forge/maker-rpm",
           "config": {}
-        },
-        {
-  "build": {
-    "appId": "com.yourname.papertrail",
-    "productName": "PaperTrail",
-    "directories": {
-      "buildResources": "assets"
-    },
-    "win": { "target": "nsis", "icon": "assets/icon.ico", "sign": false },
-    
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "perMachine": false
-    },
-    "mac": { "icon": "assets/icon.icns" },
-    "linux": { "icon": "assets/icon.png" }
-  }
-}
+        }
         
       ]
     }
