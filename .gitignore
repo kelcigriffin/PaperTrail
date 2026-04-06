@@ -1,0 +1,6 @@
+# Build output
+dist/
+out/
+win-unpacked/
+node_modules
+out
