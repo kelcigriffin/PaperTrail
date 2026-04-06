@@ -56,7 +56,13 @@
     "directories": {
       "buildResources": "assets"
     },
-    "win": { "sign": false },
+    "win": { "target": "nsis", "icon": "assets/icon.ico", "sign": false },
+    
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false
+    },
     "mac": { "icon": "assets/icon.icns" },
     "linux": { "icon": "assets/icon.png" }
   }
