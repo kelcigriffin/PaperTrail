@@ -56,9 +56,9 @@
     "directories": {
       "buildResources": "assets"
     },
-    "win": {
-      "sign": false
-    }
+    "win": { "sign": false },
+    "mac": { "icon": "assets/icon.icns" },
+    "linux": { "icon": "assets/icon.png" }
   }
 }
         
