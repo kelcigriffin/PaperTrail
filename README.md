@@ -102,7 +102,7 @@ Escape to dismiss editors
 Shift‑click for optional notes on bundle items
 
 
-🔐 <b>Privacy & Storage</b>
+🔐 <b>Privacy & Storage</b><br>
 <b>PaperTrail is local‑first by design.</b>
 
 -All data is stored locally using IndexedDB
