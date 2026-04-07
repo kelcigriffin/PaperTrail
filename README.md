@@ -19,7 +19,7 @@ It’s designed for:
 
 -ongoing work that repeats weekly or monthly
 -real projects that need notes and documentation
--weekly reviews instead of daily guilt
+-weekly reviews to remind you of your progress
 -a minimal interface that stays out of the way
 
 -Object permanence. Clear organizational structure. See what you're doing well, stay ahead of your to-do list, remember what you've done.
