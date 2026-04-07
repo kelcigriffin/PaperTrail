@@ -110,9 +110,9 @@ Shift‑click for optional notes on bundle items
 -No telemetry or analytics
 -Full export and import via plain .json files
 
-<b>You own your data.</b>
+<b>You own your data.</b> I will only see download metrics from GitHub. PaperTrail collects nothing from users and does not require an internet connection once downloaded. 
 
-<b>Getting Started</b>
+<b>Getting Started</b><br>
 Local / Web
 
 Open index.html in a modern browser
