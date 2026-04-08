@@ -17,7 +17,7 @@ Most task managers are bloated and built for speed, engagement, or urgency. Rath
 
 The Structure:<br>
 -Supports ongoing work that repeats weekly or monthly<br>
--Track projects that need notes and documentation<br>
+-Tracks projects that need notes and documentation<br>
 -Compiles weekly reviews to remind you of your progress<br>
 -Exists as a minimal interface that stays out of the way<br>
 
