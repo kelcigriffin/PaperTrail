@@ -9,7 +9,7 @@ The Vision:<br>
 
 PaperTrail is meant to feel like a well‑used notebook.<br>
 <p>Open it up, jot down thoughts and tasks, let your mind relax. You're not going to forget, because you've left yourself a PaperTrail that's always there when you need it.
-Like a journal, post-its on the mirror, a grocery list on the fridge-- PaperTrail functions as a place to record the important things so you can come back to review your to-do list, reflect on your week, and know you won't forget anything.</p>
+Like a journal, post-its on the mirror, a grocery list on the fridge-- PaperTrail functions as a place to record the important things so you can come back to review your tasks, reflect on your week, and know you won't forget anything.</p>
 
 The Why:<br>
 Most task managers are bloated and built for speed, engagement, or urgency. Rather than help the user, they create stress and breadcrumb you with just enough dopamine that you keep coming back until you eventually burn out-- but not before you've paid a subscription fee, given them your data, and/or fed the capitalist machine. <br>
