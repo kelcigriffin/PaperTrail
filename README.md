@@ -1,10 +1,11 @@
 <h1>PaperTrail</h1>
-PaperTrail is a calm but powerful, local‑first project and task tracker built for people who plan in weeks and months, and desire a low friction way to stay organized. Spend time up front to input your main projects and recurring tasks, let PaperTrail help with the rest. The default color palate is modeled after my favorite VS Code color theme, Solarized Dark. When you use this app, the goal is to reduce strain-- visually and mentally.
+PaperTrail is a powerful, local‑first project and task tracker built for people who plan in weeks and months, and desire a low friction way to stay organized. Spend time up front to input your main projects and recurring tasks, let PaperTrail help with the rest. The default color palate is modeled after my favorite VS Code color theme, Solarized Dark. When you use this app, the goal is to reduce strain-- visually and mentally.
 
-It favors:
--clarity and insight over gamification and KPI overload
--persistence over pressure, so you can build habits
--structure without rigidity
+The Vision:
+-clarity, reflection, and insight<br>
+-persistence over pressure, so you can build habits<br>
+-structure without rigidity<br>
+This is a desktop-only application that prioritizes clarity and insight, for people who like to see reflective patterns without the pressure of KPI driven metrics and gamification of modern software. I wanted a lofi environment that was easy on the eyes, free of visual clutter, and deceivingly powerful despite the low-tech feel. I built this app in a way that avoids the pressure of performance. It's simply designed to show me how I'm <i>already</i> performing. Anything can be a to-do list, it's what your to-do list shows you that will make you want to come back over and over again. PaperTrail will help with habit building in a way that doesn't feel forced, because it is built to adapt to your thought patterns and display information in a way that feels natural. No more endless scrolling, no more jotting on random notepads, no more phone-note-graveyards. Just one app, designed to make large batches of information appear digestable, so you're taking in what you can handle without the visual overwhelm of an endless list.
 
 PaperTrail is meant to feel like a well‑used notebook:
 
