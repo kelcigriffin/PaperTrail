@@ -139,7 +139,7 @@ Weekly Calendar view enhancements-- possible addition of time-blocking
 General functionality improvements
 
 
-📄 License
+📄 License<br>
 Source-Available, non-commercial EULA
 
 ✅ Current Status
