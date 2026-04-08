@@ -140,7 +140,7 @@ General functionality improvements
 
 
 📄 License
-MIT License
+Source-Available, non-commercial EULA
 
 ✅ Current Status
 Version 1.0.0 establishes the core direction of PaperTrail: a calm, dependable system for recurring work, planning, and reflection.
