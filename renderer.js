@@ -531,6 +531,10 @@ function countUnestimatedTasks(tasks) {
     anchor: null,            // last anchor id for Shift-range
     orderByContainer: new WeakMap() // containerEl -> array of task ids in render order
   };
+  // --- Bulk-selection state for NOTES (separate from tasks)
+const noteSelection = {
+  ids: new Set(),
+};
 
   function clearSelection() {
     selection.ids.clear();
@@ -677,7 +681,93 @@ function countUnestimatedTasks(tasks) {
       bar.classList.toggle('show', count > 0);
     });
   }
-  
+  function renderNotesBulkBar(container, notes) {
+  if (noteSelection.ids.size === 0) return null;
+
+  const bar = document.createElement('div');
+  bar.className = 'bulkbar show';
+
+  bar.innerHTML = `
+    <div class="row">
+      <span class="kbd">${noteSelection.ids.size} selected</span>
+    </div>
+    <div class="row">
+    <button class="btn ghost" id="bulkNoteSelectAll">Select all</button>
+      <select id="bulkNoteProject">
+        <option value="">— No project</option>
+        ${cache.projects.map(p =>
+          `<option value="${p.id}">${escapeHTML(p.name)}</option>`
+        ).join('')}
+      </select>
+
+      <button class="btn ghost" id="bulkNoteMove">Move</button>
+      <button class="btn danger" id="bulkNoteDelete">Delete</button>
+      <button class="btn ghost" id="bulkNoteClear">Clear</button>
+    </div>
+  `;
+
+  // ---- Wire actions ----
+// Select all notes in this view
+bar.querySelector('#bulkNoteSelectAll')?.addEventListener('click', () => {
+  const visibleIds = getVisibleNoteIds(notes);
+
+  const allAlreadySelected = visibleIds.every(id =>
+    noteSelection.ids.has(id)
+  );
+
+  if (allAlreadySelected) {
+    // toggle → clear
+    noteSelection.ids.clear();
+  } else {
+    // select everything visible
+    visibleIds.forEach(id => noteSelection.ids.add(id));
+  }
+
+  render(); // preserve scroll (as you already adjusted)
+});
+  // Clear selection
+  bar.querySelector('#bulkNoteClear')?.addEventListener('click', () => {
+    noteSelection.ids.clear();
+    render();
+  });
+
+  // Delete selected notes
+  bar.querySelector('#bulkNoteDelete')?.addEventListener('click', async () => {
+    if (!confirm(`Delete ${noteSelection.ids.size} note(s)?`)) return;
+    const { stores } = tx(STORES.notes, 'readwrite');
+    for (const id of noteSelection.ids) {
+      await delByKey(stores[STORES.notes], id);
+    }
+    noteSelection.ids.clear();
+    await loadAll();
+    render();
+  });
+
+  // Move notes to a project
+  bar.querySelector('#bulkNoteMove')?.addEventListener('click', async () => {
+    const sel = bar.querySelector('#bulkNoteProject');
+    const projectId = sel.value || null;
+    const now = new Date().toISOString();
+    const { stores } = tx(STORES.notes, 'readwrite');
+
+    for (const id of noteSelection.ids) {
+      const note = cache.notes.find(n => n.id === id);
+      if (!note) continue;
+      await put(stores[STORES.notes], {
+        ...note,
+        projectId,
+        updatedAt: now
+      });
+    }
+
+    noteSelection.ids.clear();
+    await loadAll();
+    render();
+  });
+
+  return bar;
+}
+
   // Visually sync the .selected class for every item in a list container
   function refreshContainerSelectionStyles(containerEl) {
     if (!containerEl) return;
@@ -1523,7 +1613,15 @@ if (!cache.settings.compactDashboard) {
     renderTaskCollection($('#dashOverdue'), overdue);
     renderTaskCollection($('#dashRecurring'), rec);
   }
-    renderNotes($('#notesList'), cache.notes.slice().reverse().slice(0,10));
+    // renderNotes($('#notesList'), cache.notes.slice().reverse().slice(0,10));
+    // Dashboard Notes = unassigned (Inbox) notes only
+const dashboardNotes = cache.notes
+  .filter(n => !n.projectId)
+  .slice()
+  .reverse()
+  .slice(0, 10);
+
+renderNotes($('#notesList'), dashboardNotes);
     
 // Wire the toggle
   document.getElementById('btnToggleCompact')?.addEventListener('click', () => toggleCompactDashboard());
@@ -2228,9 +2326,18 @@ card.addEventListener('dragend', () => {
     renderWorkWeekCalendar(container, tasks);
   });
 }
+function getVisibleNoteIds(notes) {
+  return notes.map(n => n.id);
+}
 function renderNotes(container, notes) {
   if (!container) return;
+  // const isSelectingNotes = noteSelection.ids.size > 0;
   container.innerHTML = '';
+// ---- Notes bulk action bar ----
+  const bulkBar = renderNotesBulkBar(container, notes);
+  if (bulkBar) {
+    container.appendChild(bulkBar);
+  }
 
   // Ensure only one inline editor is open at a time
   let editingId = null;
@@ -2264,6 +2371,10 @@ const meta = document.createElement('div');
     const row = document.createElement('div');
     row.className = 'row';
     const sel = makeProjectSelect(note.projectId);
+    // Prevent editor interactions from re-triggering note click handlers
+sel.addEventListener('click', e => e.stopPropagation());
+sel.addEventListener('mousedown', e => e.stopPropagation());
+sel.addEventListener('change', e => e.stopPropagation());
     const btnSave = document.createElement('button');
     btnSave.className = 'btn'; btnSave.textContent = 'Save';
     const btnCancel = document.createElement('button');
@@ -2271,11 +2382,15 @@ const meta = document.createElement('div');
     row.appendChild(sel);
     row.appendChild(btnSave);
     row.appendChild(btnCancel);
+    btnSave.addEventListener('click', e => e.stopPropagation());
+    btnCancel.addEventListener('click', e => e.stopPropagation());
 
     // Replace content area with editor
     content.innerHTML = '';
     content.appendChild(meta);
     content.appendChild(textarea);
+    textarea.addEventListener('click', e => e.stopPropagation());
+    textarea.addEventListener('mousedown', e => e.stopPropagation());
     content.appendChild(row);
     
 // Focus & place caret at the end
@@ -2329,9 +2444,17 @@ const meta = document.createElement('div');
   notes.forEach(n => {
     const proj = cache.projects.find(p => p.id === n.projectId);
     const el = document.createElement('div');
-    el.className = 'item';
+    el.className = 'item note-row';
+    el.dataset.id = n.id;
     el.innerHTML = `
-      <div class="note-content" style="grid-column: 1 / span 2; cursor: text;">
+      <input
+  type="checkbox"
+  class="note-checkbox"
+  aria-label="Select note"
+  ${noteSelection.ids.has(n.id) ? 'checked' : ''}
+/>
+<div class="note-content" style="grid-column: 2 / span 2; cursor: text;">
+
         <div class="sub">
           ${fmt(n.createdAt, true)}
           ${proj ? ` • <span class="chip"><span class="project-chip" style="background:${proj.color || '#7c9cc0'}"></span> ${escapeHTML(proj.name)}</span>` : ''}
@@ -2347,10 +2470,48 @@ const meta = document.createElement('div');
     `;
 
     // Click-to-edit on the content area
-    el.querySelector('.note-content')?.addEventListener('click', () => {
-      if (editingId && editingId !== n.id) return; // allow one editor at a time
-      enterInlineEdit(el, n);
-    });
+    // el.querySelector('.note-content')?.addEventListener('click', () => {
+    //   if (editingId && editingId !== n.id) return; // allow one editor at a time
+    //   enterInlineEdit(el, n);
+    // });
+ // Checkbox-driven note selection
+const checkbox = el.querySelector('.note-checkbox');
+checkbox?.addEventListener('click', (e) => {
+  e.stopPropagation(); // don't trigger edit
+});
+
+
+checkbox?.addEventListener('change', () => {
+  editingId = null;
+
+  if (checkbox.checked) {
+    noteSelection.ids.add(n.id);
+  } else {
+    noteSelection.ids.delete(n.id);
+  }
+
+  const main = document.getElementById('main');
+  const scrollTop = main?.scrollTop ?? 0;
+
+  render();
+
+  // Restore scroll position on next frame
+  requestAnimationFrame(() => {
+    if (main) main.scrollTop = scrollTop;
+  });
+});
+
+if (noteSelection.ids.has(n.id)) {
+  el.classList.add('selected');
+}   
+el.querySelector('.note-content')?.addEventListener('click', (e) => {
+  // If this note is already being edited, do nothing
+  if (editingId === n.id) return;
+
+  if (editingId && editingId !== n.id) return;
+  enterInlineEdit(el, n);
+});
+
     // Delete button
     el.querySelector('.btn-note-del')?.addEventListener('click', () => deleteNote(n.id));
 
@@ -3988,13 +4149,13 @@ function scrollToTopNow() {
   
     function setView(view) {
       clearSelection();
+      noteSelection.ids.clear();
       closeInlineLogEditor();
       currentView = view;
       scrollToTopNow();   // <— ensure new pages start at the top
       render();
       workWeekOffset = 0;
 }
-
 
   async function exportBackup() {
     const payload = { exportedAt: new Date().toISOString(), projects: cache.projects, tasks: cache.tasks, notes: cache.notes, settings: cache.settings };
