@@ -34,7 +34,7 @@
       "makers": [
         {
           "name": "@electron-forge/maker-squirrel",
-          "config": { "setupIcon": "assets/icon.ico"}
+          "config": { "setupIcon": "assets/iconPurple.ico"}
 
         },
         {
