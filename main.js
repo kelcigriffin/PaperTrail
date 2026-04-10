@@ -19,7 +19,7 @@ function createWindow() {
     title: 'PaperTrail',
     backgroundColor: '#0f172a',
     show: false,
-    icon: path.join(__dirname, 'assets', 'icon.png'), // ✅ correct place
+    icon: path.join(__dirname, 'assets', 'iconPurple.png'), // ✅ correct place
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: false,
