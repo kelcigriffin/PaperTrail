@@ -198,8 +198,8 @@ function rerenderCurrentView() {
 
   /** ---------------- IndexedDB minimal helper ------------------------------- */
   const DB_NAME = 'papertrail_db';
-  const DB_VERSION = 3;
-  const STORES = { projects: 'projects', tasks: 'tasks', notes: 'notes', completions: 'completions', settings: 'settings', metrics:'metrics' };
+  const DB_VERSION = 4;
+  const STORES = { projects: 'projects', tasks: 'tasks', notes: 'notes', completions: 'completions', settings: 'settings', metrics:'metrics', eod: 'eodWrapups' };
   let db;
 
   function openDB() {
@@ -239,6 +239,10 @@ function rerenderCurrentView() {
         s.createIndex('by_date', 'date', { unique: false });
         s.createIndex('by_type', 'type', { unique: false });
         }
+        if (!db.objectStoreNames.contains(STORES.eod)) {
+        db.createObjectStore(STORES.eod, { keyPath: 'id' });
+        }
+
 
       };
       // req.onsuccess = () => resolve(req.result);
@@ -723,12 +727,12 @@ bar.querySelector('#bulkNoteSelectAll')?.addEventListener('click', () => {
     visibleIds.forEach(id => noteSelection.ids.add(id));
   }
 
-  render(); // preserve scroll (as you already adjusted)
+  renderNotes(container, notes);
 });
   // Clear selection
   bar.querySelector('#bulkNoteClear')?.addEventListener('click', () => {
     noteSelection.ids.clear();
-    render();
+    renderNotes(container, notes);
   });
 
   // Delete selected notes
@@ -1061,12 +1065,14 @@ if (currentView.type === 'project' && currentView.id) {
 
   }
 
-  function render() {
+  function render({ preserveScroll = false } = {}) {
     // Keep the sidebar visible on all views; focus-mode is a manual toggle only.
     renderSidebar();
     const main = $('#main'); if (!main) return;    
-// Start new content from the top
+// Start new content from the top 
+  if (!preserveScroll) {
     scrollToTopNow();
+  }
     main.innerHTML = '';
     switch (currentView.type) {
       case 'dashboard': return renderDashboard(main);
@@ -1175,6 +1181,141 @@ async function getWeeklyProductivityStats() {
 //     </div>
 //   `;
 // }
+function getTodaysCompletionSummary() {
+  const today = todayISO();
+  const start = new Date(today + 'T00:00:00');
+  const end = new Date(today + 'T23:59:59');
+
+  const oneOff = cache.tasks.filter(t =>
+    t.type === 'one-off' &&
+    t.completedDate &&
+    new Date(t.completedDate) >= start &&
+    new Date(t.completedDate) <= end
+  );
+
+  const recurring = cache._allCompletions?.filter(c => {
+    const d = new Date(c.completedAt);
+    return d >= start && d <= end;
+  }) ?? [];
+
+  return {
+    oneOff,
+    recurring
+  };
+}
+
+async function openEodWrapup() {
+  // Load completions if not already cached
+  const { stores } = tx(STORES.completions, 'readonly');
+  cache._allCompletions = await getAll(stores[STORES.completions]);
+
+  const { oneOff, recurring } = getTodaysCompletionSummary();
+
+  const dlg = document.createElement('dialog');
+  dlg.className = 'modal';
+  dlg.innerHTML = `
+    <form method="dialog" class="panel" style="min-width:420px; max-width:520px;">
+      <h2>🌙 Wrap up today</h2>
+
+      <div class="sub" style="margin-bottom:12px;">
+        Here’s what you completed today.
+      </div>
+
+      <div class="list" style="max-height:160px; overflow:auto; margin-bottom:12px;">
+        ${
+          oneOff.length === 0 && recurring.length === 0
+            ? `<div class="empty">No completions logged today.</div>`
+            : `
+              ${oneOff.map(t =>
+                `<div class="item">☑️ ${escapeHTML(t.title)}</div>`
+              ).join('')}
+              ${recurring.map(c =>
+                `<div class="item">🔁 ${escapeHTML(
+                  cache._taskById?.get(c.taskId)?.title ?? 'Recurring task'
+                )}</div>`
+              ).join('')}
+            `
+        }
+      </div>
+
+      <div class="field">
+        <label for="eodLeftOff">Where I left off</label>
+        <textarea id="eodLeftOff" rows="3"
+          placeholder="Anything unfinished or in progress…"></textarea>
+      </div>
+
+      <div class="field">
+        <label for="eodTomorrow">Where I’ll pick up tomorrow</label>
+        <textarea id="eodTomorrow" rows="3"
+          placeholder="What should tomorrow-you start with?"></textarea>
+      </div>
+
+      <div class="row" style="justify-content:flex-end; gap:8px; margin-top:12px;">
+        <button class="btn secondary" value="cancel">Cancel</button>
+        <button class="btn primary" value="ok">Save wrap‑up</button>
+      </div>
+    </form>
+  `;
+
+  document.body.appendChild(dlg);
+  patchDialogs();
+
+  try { dlg.showModal(); } catch { dlg.setAttribute('open', ''); }
+
+  dlg.addEventListener('close', async () => {
+    if (dlg.returnValue !== 'ok') {
+      dlg.remove();
+      return;
+    }
+
+    const leftOff = dlg.querySelector('#eodLeftOff')?.value.trim() ?? '';
+    const tomorrow = dlg.querySelector('#eodTomorrow')?.value.trim() ?? '';
+
+    const id = todayISO();
+    const now = new Date().toISOString();
+
+    const { stores } = tx([STORES.eod, STORES.settings], 'readwrite');
+
+    await put(stores[STORES.eod], {
+      id,
+      date: id,
+      completed: {
+        oneOff: oneOff.length,
+        recurring: recurring.length
+      },
+      leftOff,
+      tomorrow,
+      createdAt: now
+    });
+
+    await saveSettings({ _lastEodWrapupKey: id });
+
+    dlg.remove();
+    render(); // refresh dashboard card
+  }, { once: true });
+}
+async function loadEodWrapupById(id) {
+  if (!id) return null;
+  const { stores } = tx(STORES.eod, 'readonly');
+  const all = await getAll(stores[STORES.eod]);
+  return all.find(w => w.id === id) ?? null;
+}
+function getPreviousWorkdayISO(settings = cache.settings, from = new Date()) {
+  const wd = settings.workday;
+  if (!wd) return null;
+
+  const d = new Date(from);
+  d.setDate(d.getDate() - 1);
+
+  while (true) {
+    const day = d.getDay();
+    if (wd.days.includes(day)) {
+      return todayISO(d);
+    }
+    d.setDate(d.getDate() - 1);
+  }
+}
+
   function renderDashboard(root) {
     const t = todayISO(); 
   // Micro summary panel (initial "loading" placeholder)
@@ -1251,13 +1392,16 @@ root.insertAdjacentHTML('beforeend', `
      // Productivity chips (inside heatmap container)
      const chipsHost = document.getElementById('prodChipsHost');
      if (chipsHost) {
-       chipsHost.innerHTML = renderProductivityChips(stats);
+       
+ if (typeof renderProductivityChips === 'function') {
+   chipsHost.innerHTML = renderProductivityChips(stats);
+ }
+
      }
    } catch (err) {
      console.warn('[dashboard] weekly stats failed:', err);
    }
  })();
-
   
 
 // Build & render all three heatmaps (Productivity + Sleep + Mood)
@@ -1594,6 +1738,62 @@ if (!cache.settings.compactDashboard) {
       </div>
     `);
   }
+  // --- EOD Wrap-Up card ---
+(function renderEodCard() {
+  const now = new Date();
+  const settings = cache.settings;
+
+  if (!isWorkdayToday(settings, now)) return;
+  if (hasWrappedUpToday(settings)) return;
+
+  root.insertAdjacentHTML('beforeend', `
+    <div class="panel eod-wrapup">
+      <h2>🌙 Wrap up today</h2>
+      <div class="sub" style="margin: 6px 0 12px;">
+        Take a minute to note where you left off and make tomorrow easier.
+      </div>
+      <button id="btnEodWrapup" class="btn primary">
+        Wrap up
+      </button>
+    </div>
+  `);
+
+  document.getElementById('btnEodWrapup')
+    ?.addEventListener('click', openEodWrapup);
+})();
+// --- Yesterday's EOD Wrap-Up ---
+(async function renderYesterdaysWrapup() {
+  const settings = cache.settings;
+  const now = new Date();
+
+  // Only show on workdays
+  if (!isWorkdayToday(settings, now)) return;
+
+  // If user already wrapped up today, no need to resurface yesterday
+  if (hasWrappedUpToday(settings)) return;
+
+  const prevId = getPreviousWorkdayISO(settings, now);
+  if (!prevId) return;
+
+  const wrapup = await loadEodWrapupById(prevId);
+  if (!wrapup) return;
+
+  const preview =
+    wrapup.tomorrow?.trim() ||
+    wrapup.leftOff?.trim();
+
+  if (!preview) return;
+
+  root.insertAdjacentHTML('beforeend', `
+    <div class="panel eod-wrapup previous">
+      <h2>☀️ Yesterday’s wrap‑up</h2>
+      <div class="sub" style="margin-top:6px;">
+        ${escapeHTML(preview)}
+      </div>
+    </div>
+  `);
+})();
+
   root.insertAdjacentHTML('beforeend', `
     <div class="panel">
         <h2>
@@ -1975,7 +2175,7 @@ if (task.type === 'recurring' && task.bundle?.type === 'monthly') {
       <label class="bundle-item">
         <input type="checkbox" class="bundle-check" data-key="${escapeHTML(it.key)}" ${isOn ? 'checked' : ''} />
         <span class="label">${escapeHTML(it.label)}</span>
-        <span class="meta">${isOn ? `<i class="ri-checkbox-line icon"></i>${escapeHTML(stamp)}` : ''}</span>
+        <span class="meta">${isOn ? `${escapeHTML(stamp)}` : ''}</span>
       </label>`;
   }).join('');
 
@@ -1998,11 +2198,17 @@ if (task.type === 'recurring' && task.bundle?.type === 'monthly') {
       const pri = task.priority ? `<span class="chip">Priority: ${task.priority}</span>` : '';
       const projChip = proj ? `<span class="chip"><span class="project-chip" style="background:${proj.color || '#7c9cc0'}"></span> ${escapeHTML(proj.name)}</span>` : `<span class="chip">Inbox</span>`;
       const blocked = task.status === 'blocked' ? `<span class="chip">⛔ Blocked</span>` : '';
-      const completed = task.status === 'done' && task.completedDate ? `<span class="chip">Completed ${fmt(task.completedDate)}</span>` : '';
-      
+      // const completed = task.status === 'done' && task.completedDate ? `<span class="chip">Completed ${fmt(task.completedDate)}</span>` : '';
+      const completed = task.status === 'done' && task.completedDate ? `<button class="chip btn-edit-completed-date">Completed ${fmt(task.completedDate)}</button>` : '';
+
       const item = document.createElement('div');
       item.className = 'item task-row';
       item.draggable = true;
+
+  item.querySelector('.btn-edit-completed-date')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  openCompletedDateEditor(item, task);
+});
 
 item.addEventListener('dragstart', (e) => {
   draggingTask = task;
@@ -2054,6 +2260,10 @@ item.addEventListener('dragend', () => {
   if (panel) panel.style.display = '';
   if (btn)   btn.setAttribute('aria-expanded', 'true');
 }
+item.querySelector('.btn-edit-completed-date')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  openCompletedDateEditor(item, task);
+});
 
     // Selection handlers (on the square)
     item.querySelector('.selbox')?.addEventListener('click', (e) => {
@@ -2096,17 +2306,20 @@ if (task.bundle?.type === 'monthly') {
   // Checkbox behavior:
   //  - checking opens the inline editor (same note flow), then logs via markMonthlyBundleItem(...)
   //  - unchecking asks to confirm, then clears via clearMonthlyBundleItem(...)
-  item.querySelectorAll('.bundle-check').forEach(chk => {
-    chk.addEventListener('change', (e) => {
+item.querySelectorAll('.bundle-check').forEach(chk => {  
+    chk.addEventListener('change', async (e) => {
       const key = chk.getAttribute('data-key');
       if (!key) return;
 
-      // Uncheck → confirm and clear (unmark) or revert if canceled
+    // ✅ Preserve scroll for inline bundle interactions
+    const main = document.getElementById('main');
+    const scrollTop = main?.scrollTop ?? 0;
+
       
  // Optional power-user path: Shift+click to add a note (kept for convenience)
     if (e.shiftKey && chk.checked) {
       openInlineLogEditor(item, task, async (note) => {
-        await markMonthlyBundleItem(task, key, note);
+        await markMonthlyBundleItem(task, key, note, { preserveScroll: true});
       });
       return;
     }
@@ -2114,7 +2327,7 @@ if (task.bundle?.type === 'monthly') {
     // Uncheck → confirm and clear (no editor)
     if (!chk.checked) {
       if (confirm('Unmark this item for this month?')) {
-        clearMonthlyBundleItem(task, key);
+        await clearMonthlyBundleItem(task, key, { preserveScroll: true });
       } else {
         chk.checked = true; // revert uncheck if canceled
       }
@@ -2122,7 +2335,7 @@ if (task.bundle?.type === 'monthly') {
     }
 
     // Check → log immediately with no note
-    markMonthlyBundleItem(task, key, null);
+    markMonthlyBundleItem(task, key, null, { preserveScroll: true })
 
     });
   });
@@ -2156,6 +2369,32 @@ if (task.bundle?.type === 'monthly') {
 
 
   }
+function openCompletedDateEditor(rowEl, task) {
+  const anchor = rowEl.querySelector('.btn-edit-completed-date');
+  if (!anchor) return;
+
+  const input = document.createElement('input');
+  input.type = 'date';
+  input.value = toISODate(new Date(task.completedDate));
+  input.style.marginLeft = '6px';
+
+  anchor.replaceWith(input);
+  input.focus();
+
+  const save = async () => {
+    const newDate = input.value;
+    if (!newDate) return render(); // fallback
+
+    await createOrUpdateTask({
+      ...task,
+      completedDate: new Date(newDate + 'T00:00:00').toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+  };
+
+  input.addEventListener('change', save);
+  input.addEventListener('blur', save);
+}
 
 // --- Work-week calendar (Monday–Friday) ------------------------
 function renderWorkWeekCalendar(container, tasks, opts = {}) {
@@ -2340,7 +2579,7 @@ function renderNotes(container, notes) {
   }
 
   // Ensure only one inline editor is open at a time
-  let editingId = null;
+  editingId = null;
 
   const enterInlineEdit = (card, note) => {
     editingId = note.id;
@@ -2490,15 +2729,9 @@ checkbox?.addEventListener('change', () => {
     noteSelection.ids.delete(n.id);
   }
 
-  const main = document.getElementById('main');
-  const scrollTop = main?.scrollTop ?? 0;
+  // Local re-render only; do NOT tear down the whole view
+  renderNotes(container, notes);
 
-  render();
-
-  // Restore scroll position on next frame
-  requestAnimationFrame(() => {
-    if (main) main.scrollTop = scrollTop;
-  });
 });
 
 if (noteSelection.ids.has(n.id)) {
@@ -2635,7 +2868,7 @@ async function deleteProject(projectId, { mode = 'move' } = {}) {
 }
 
 // Mark one item in a monthly bundle for *this month*, stamping doneAt and optional note.
-async function markMonthlyBundleItem(task, key, note) {
+async function markMonthlyBundleItem(task, key, note, { preserveScroll = false } = {}) {
   if (!(task?.bundle?.type === 'monthly')) return;
   const now = new Date(); const ym = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
   const source = Array.isArray(task.bundle.items) ? task.bundle.items : [];
@@ -2662,7 +2895,8 @@ async function markMonthlyBundleItem(task, key, note) {
     bundleLabel: label,
     kind: 'bundle'
   });
-  await loadAll(); render();
+  await loadAll(); 
+  render({ preserveScroll });
 }
 
 async function loadAllCompletions() {
@@ -2682,7 +2916,7 @@ async function getLastCompletionByTaskId() {
 }
 
 // Clear one item in the current month’s bundle history (unmark)
-async function clearMonthlyBundleItem(task, key) {
+async function clearMonthlyBundleItem(task, key, { preserveScroll = false } = {}) {
   if (!(task?.bundle?.type === 'monthly')) return;
   const now = new Date();
   const ym  = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
@@ -2714,7 +2948,8 @@ const { stores } = tx([STORES.tasks, STORES.completions], 'readwrite');
   });
   for (const c of toDelete) await delByKey(stores[STORES.completions], c.id);
 
-  await loadAll(); render();
+  await loadAll(); 
+  render({ preserveScroll: true });
 }
 async function renderRecurring(root) {
   // 1) Collect recurring tasks
@@ -2828,31 +3063,168 @@ async function renderCompleted(root) {
             </span>
           </div></div>
           <div class="row"><div class="meta">
-            <span class="chip">Completed ${fmt(r.completedAt, true)}</span>
-            ${(!bundleLabel && r.note) ? `<span class="chip"><i class="ri-sticky-note-add-line"></i> ${escapeHTML(r.note)}</span>` : ''}
+            <button class="chip btn-edit-recurring-date" data-log-id="${r.id}">Completed ${fmt(r.completedAt, true)}</button>
+            
            
+${(!bundleLabel && r.note)
+  ? `<button class="chip btn-edit-recurring-note"><i class="ri-sticky-note-add-line"></i> ${escapeHTML(r.note)}</button>`
+  : ''}
+
           </div></div>
         </div>
         <div class="actions">
+        <button class="btn ghost sm btn-undo-log">Undo</button>
           <button class="btn ghost sm btn-del-log" title="Delete log">Delete</button>
         </div>
       `;
 
+el.querySelector('.btn-edit-recurring-note')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  openRecurringNoteEditor(el, r);
+});
+
+el.querySelector('.btn-undo-log')?.addEventListener('click', async () => {
+  if (!confirm('Undo this recurring completion?')) return;
+  await undoRecurringCompletion(r.id);
+});
         el.querySelector('.btn-del-log')?.addEventListener('click', async () => {
           if (!confirm('Delete this recurring log entry?')) return;
           await deleteCompletion(r.id);
         });
+        el.querySelector('.btn-edit-recurring-date')?.addEventListener('click', (e) => {
+  e.stopPropagation();
+  openRecurringCompletionDateEditor(el, r);
+});
 
         list.appendChild(el);
       });
     }
   }
+  function openRecurringNoteEditor(rowEl, log) {
+  const anchor = rowEl.querySelector('.btn-edit-recurring-note');
+  if (!anchor) return;
 
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.value = log.note ?? '';
+  input.style.flex = '1';
+
+  anchor.replaceWith(input);
+  input.focus();
+
+  const save = async () => {
+    const { stores } = tx(STORES.completions, 'readwrite');
+    await put(stores[STORES.completions], {
+      ...log,
+      note: input.value.trim() || null
+    });
+    await loadAll();
+    render({ preserveScroll: true });
+  };
+
+  input.addEventListener('blur', save);
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') save();
+    if (e.key === 'Escape') render({ preserveScroll: true });
+  });
+}
+
+function openRecurringCompletionDateEditor(rowEl, log) {
+  const anchor = rowEl.querySelector('.btn-edit-recurring-date');
+  if (!anchor) return;
+
+  const input = document.createElement('input');
+  input.type = 'date';
+  input.value = toISODate(new Date(log.completedAt));
+  input.style.marginLeft = '6px';
+
+  anchor.replaceWith(input);
+  input.focus();
+
+  const save = async () => {
+    const newDate = input.value;
+    if (!newDate) {
+      render();
+      return;
+    }
+
+    await updateRecurringCompletionDate(log.id, newDate);
+  };
+
+  input.addEventListener('change', save);
+  input.addEventListener('blur', save);
+}
 async function deleteCompletion(id) {
   const { stores } = tx(STORES.completions, 'readwrite');
   await delByKey(stores[STORES.completions], id);
   await loadAll(); render();
 }
+async function updateRecurringCompletionDate(logId, ymdDate) {
+  const iso = new Date(ymdDate + 'T12:00:00').toISOString();
+
+  const { stores } = tx(STORES.completions, 'readwrite');
+  const all = await getAll(stores[STORES.completions]);
+  const log = all.find(c => c.id === logId);
+  if (!log) return;
+
+  await put(stores[STORES.completions], {
+    ...log,
+    completedAt: iso
+  });
+
+// ✅ If this log came from a monthly bundle, sync the task.bundle.history timestamp
+if (log.bundleKey) {
+  const task = cache.tasks.find(t => t.id === log.taskId);
+  if (task?.bundle?.type === 'monthly') {
+    const d = new Date(iso);
+    const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    const history = { ...(task.bundle.history ?? {}) };
+    const row = (history[ym] ?? []).map(it =>
+      it.key === log.bundleKey ? { ...it, doneAt: iso } : it
+    );
+    history[ym] = row;
+    await put(stores[STORES.tasks], {
+      ...task,
+      bundle: { ...task.bundle, history },
+      updatedAt: new Date().toISOString()
+    });
+  }
+}
+
+  await loadAll();
+  render({ preserveScroll: true });
+}
+
+async function undoRecurringCompletion(logId) {
+  const { stores } = tx([STORES.completions, STORES.tasks], 'readwrite');
+  const all = await getAll(stores[STORES.completions]);
+  const log = all.find(c => c.id === logId);
+  if (!log) return;
+
+  const task = cache.tasks.find(t => t.id === log.taskId);
+  await delByKey(stores[STORES.completions], logId);
+
+  if (task) {
+    const prev = all
+      .filter(c => c.taskId === task.id && c.id !== logId)
+      .sort((a,b) => b.completedAt.localeCompare(a.completedAt))[0];
+
+    const nextDue = prev
+      ? nextDueForRecurring(task, new Date(prev.completedAt))
+      : task.dueDate;
+
+    await put(stores[STORES.tasks], {
+      ...task,
+      completedDate: prev?.completedAt ?? null,
+      dueDate: toISODate(nextDue),
+      updatedAt: new Date().toISOString()
+    });
+  }
+
+  await loadAll();
+  render();
+}
+
 async function renderInsights(root) {
 
   root.innerHTML = '';
@@ -3551,8 +3923,16 @@ function openNoteDialog(noteOrOpts = {}) {
       grouped[key].push(line);
     };
 
-    oneOffs.forEach(t => push(t.projectId, `☑️ ${t.title} (${t.priority})`));
-    
+    oneOffs.forEach(t => {
+      const when = t.completedDate
+    ? fmt(new Date(t.completedDate))
+    : '';
+    push(t.projectId,
+// push(t.projectId, `☑️ ${t.title} (${t.priority})`));
+`☑️ ${t.title} (${t.priority})${when ? ` — ${when}` : ''}`
+    );
+ });
+
 const byId = taskById();
     recurringLogs.forEach(log => {
       const t = byId.get(log.taskId);
@@ -4187,6 +4567,19 @@ function scrollToTopNow() {
   `${todayISO()}::start-now::${taskId}`;
   async function checkAndNotify() {
     if (!cache.settings.notificationsEnabled) return;
+    
+  // --- EOD wrap-up reminder ---
+  if (shouldNotifyEod(new Date(), cache.settings)) {
+    await api.notify({
+      title: '🌙 Wrap up your day',
+      body: 'Take a minute to note where you left off for tomorrow.'
+    });
+
+    await saveSettings({
+      _lastEodNotifyKey: todayISO()
+    });
+  }
+
     const t = todayISO();
     const overdueCount = cache.tasks.filter(x => x.status !== 'done' && x.dueDate && x.dueDate < t).length;
     const todayCount = cache.tasks.filter(x => x.status !== 'done' && x.dueDate === t).length; 
@@ -4212,7 +4605,38 @@ function scrollToTopNow() {
     checkAndNotify().catch(()=>{});
     notifyIntervalId = setInterval(() => checkAndNotify().catch(()=>{}), 15 * 60 * 1000);
   }
+function shouldNotifyEod(now = new Date(), settings = cache.settings) {
+  const wd = settings?.workday;
+  if (!wd || !wd.eodReminderEnabled) return false;
 
+  const todayKey = todayISO(now);
+
+  // Prevent duplicate notifications in one day
+  if (settings._lastEodNotifyKey === todayKey) return false;
+
+  // Check if today is a workday
+  const weekday = now.getDay(); // 0=Sun … 6=Sat
+  if (!wd.days.includes(weekday)) return false;
+
+  // Parse end-of-day time
+  const [endH, endM] = (wd.end || '17:00').split(':').map(Number);
+  const end = new Date(
+    now.getFullYear(),
+    now.getMonth(),
+    now.getDate(),
+    endH,
+    endM,
+    0,
+    0
+  );
+
+  // Fire window: [end - 15 min, end)
+  const fireAt = new Date(end.getTime() - 15 * 60 * 1000);
+
+  // ✅ Allow firing anytime AFTER fireAt (once per day)
+ return now >= fireAt;
+
+}
   /** ---------------- Quick Add (Enter-to-submit) ---------------------------- */
   async function submitQuickAdd() {
     const input = document.getElementById('quickTask');
@@ -4488,10 +4912,13 @@ function openInlineLogEditor(rowEl, task, onSaved) {
           filters: { status: 'all', priority: 'all', sort: 'due-asc' },
           notificationsEnabled: false,
           _lastNotifyKey: null,
+          _lastEodNotifyKey: null,
           quickAddProjectId: null,
           focusModeEnabled: false,
           sidebarCollapsed: { views: true, projects: false, settings: true },
           compactDashboard: true,
+          workday: { start: '09:00', end: '17:00', days: [1,2,3,4,5], eodReminderEnabled: true } //Mon-Fri
+
           // uncomment singleTodoBeta to allow the option back in settings
           // singleTodoBeta: true
 // renderer.js – defaults/seed (optional)
@@ -4501,6 +4928,18 @@ function openInlineLogEditor(rowEl, task, onSaved) {
       }
       await loadAll();
  
+// Back-compat: ensure workday settings exist
+if (!cache.settings.workday) {
+  await saveSettings({
+    workday: {
+      start: '09:00',
+      end: '17:00',
+      days: [1,2,3,4,5],
+      eodReminderEnabled: true
+    }
+  });
+}
+
   // Back-compat: if the settings collapse state was never set, default to collapsed
       if (!cache.settings.sidebarCollapsed || typeof cache.settings.sidebarCollapsed.settings === 'undefined' || typeof cache.settings.sidebarCollapsed.views === 'undefined') {
         const next = {
@@ -4681,8 +5120,44 @@ if (filtersBtn && filtersPop) {
       // Settings
       on('anchorWeekday', 'change', (e) => saveSettings({ anchorWeekday: Number(e.target.value) }));
       on('workdaysOnly', 'change', (e) => saveSettings({ workdaysOnly: e.target.checked }));
-      on('enableNotifications', 'change', async (e) => { await saveSettings({ notificationsEnabled: e.target.checked, _lastNotifyKey: null }); startNotificationLoop(); });
+      on('enableNotifications', 'change', async (e) => { await saveSettings({ notificationsEnabled: e.target.checked, _lastNotifyKey: null, _lastEodNotifyKey: null }); startNotificationLoop(); });
       on('compactDashboard', 'change', async (e) => { await saveSettings({ compactDashboard: !!e.target.checked }); render(); });
+      // --- Workday settings ---
+const wd = cache.settings.workday || {};
+
+const startEl = document.getElementById('workdayStart');
+const endEl = document.getElementById('workdayEnd');
+const eodEl = document.getElementById('enableEodReminder');
+const dayEls = document.querySelectorAll('.workday-day');
+
+if (startEl) startEl.value = wd.start || '09:00';
+if (endEl) endEl.value = wd.end || '17:00';
+if (eodEl) eodEl.checked = !!wd.eodReminderEnabled;
+
+dayEls.forEach(cb => {
+  cb.checked = (wd.days || []).includes(Number(cb.value));
+});
+
+// Persist changes
+const saveWorkday = async () => {
+  const days = Array.from(dayEls)
+    .filter(cb => cb.checked)
+    .map(cb => Number(cb.value));
+
+  await saveSettings({
+    workday: {
+      start: startEl?.value || '09:00',
+      end: endEl?.value || '17:00',
+      days,
+      eodReminderEnabled: !!eodEl?.checked
+    }
+  });
+};
+
+[startEl, endEl, eodEl].forEach(el => {
+  el?.addEventListener('change', saveWorkday);
+});
+dayEls.forEach(cb => cb.addEventListener('change', saveWorkday));
       // Filters
       on('filterStatus', 'change', (e) => { const filters = { ...cache.settings.filters, status: e.target.value }; 
       saveSettings({ filters }).then(() => {
@@ -4747,6 +5222,31 @@ updateFiltersButtonLabel();
       alert('Failed to initialize: ' + (err?.message || String(err)));
     }
   }
+
+function getTodayEodKey(d = new Date()) {
+  return todayISO(d);
+}
+
+function hasWrappedUpToday(settings = cache.settings) {
+  return settings._lastEodWrapupKey === getTodayEodKey();
+}
+
+function isWorkdayToday(settings = cache.settings, now = new Date()) {
+  const wd = settings.workday;
+  if (!wd) return false;
+  return wd.days.includes(now.getDay());
+}
+
+// DEV ONLY — expose helpers for debugging
+window.__ptCache = cache;
+window.__checkAndNotify = checkAndNotify;
+window.__shouldNotifyEod = shouldNotifyEod;
+window.__todayISO = todayISO;
+
+// DEV ONLY: pretend today is tomorrow
+cache.settings._lastEodWrapupKey = null;
+render();
+
 
   // Error surfacing
   window.addEventListener('error', (e) => { console.error('Global error:', e.error || e.message); });

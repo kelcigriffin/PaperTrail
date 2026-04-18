@@ -1,5 +1,5 @@
 <h2>PaperTrail</h2>
-<p></p>PaperTrail is a powerful, local‑first project and task tracker built for people who plan in weeks and months, and desire a low friction way to stay organized. Spend time up front to input your main projects and recurring tasks, let PaperTrail help with the rest. The default color palate is modeled after my favorite VS Code color theme, Solarized Dark. When you use this app, the goal is to reduce strain-- visually and mentally.</p>
+<p>PaperTrail is a powerful, local‑first project and task tracker built for people who plan in weeks and months, and desire a low friction way to stay organized. Spend time up front to input your main projects and recurring tasks, let PaperTrail help with the rest. The default color palate is modeled after my favorite VS Code color theme, Solarized Dark. When you use this app, the goal is to reduce strain-- visually and mentally.</p>
 
 The Vision:<br>
 -clarity, reflection, and insight<br>

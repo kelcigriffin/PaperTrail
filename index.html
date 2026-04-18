@@ -1317,6 +1317,38 @@ version="1.1" id="Capa_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http:/
 <label class="kbd" for="btnTheme">Toggle Theme</label>
 <button id="btnTheme" class="btn ghost">🌓</button>
 </div> -->
+        <div class="panel">
+  <h2>Workday</h2>
+
+  <div class="row" style="gap:12px; flex-wrap:wrap;">
+    <div class="field">
+      <label for="workdayStart">Start</label>
+      <input type="time" id="workdayStart" />
+    </div>
+
+    <div class="field">
+      <label for="workdayEnd">End</label>
+      <input type="time" id="workdayEnd" />
+    </div>
+  </div>
+
+  <div class="row" style="gap:8px; margin-top:8px; flex-wrap:wrap;">
+    <span class="kbd">Workdays</span>
+    <label><input type="checkbox" class="workday-day" value="1" /> Mon</label>
+    <label><input type="checkbox" class="workday-day" value="2" /> Tue</label>
+    <label><input type="checkbox" class="workday-day" value="3" /> Wed</label>
+    <label><input type="checkbox" class="workday-day" value="4" /> Thu</label>
+    <label><input type="checkbox" class="workday-day" value="5" /> Fri</label>
+    <label><input type="checkbox" class="workday-day" value="6" /> Sat</label>
+    <label><input type="checkbox" class="workday-day" value="0" /> Sun</label>
+  </div>
+  <div class="row" style="margin-top:8px;">
+    <label>
+      <input type="checkbox" id="enableEodReminder" />
+      Remind me to wrap up 15 minutes before my workday ends
+    </label>
+  </div>
+</div>
 <div class="row">
   <label class="kbd" for="themeSelect">Theme</label>
   <select id="themeSelect" title="Theme">
@@ -1350,6 +1382,7 @@ version="1.1" id="Capa_1" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http:/
           <label class="kbd" for="compactDashboard">Compact dashboard (hide lists):</label>
          <input type="checkbox" id="compactDashboard" />
         </div>
+
         <!-- index.html, another row in Settings (optional beta switch) -->
         <!-- <div class="row"> -->
           <!-- <label class="kbd" for="singleTodoBeta">Use single To‑Do view (beta):</label> -->
