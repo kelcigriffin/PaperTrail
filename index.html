@@ -1132,6 +1132,84 @@ body.focus-mode .app {
 #btnToggleTodoList:hover {
   opacity: 1;
 }
+/* --- EOD Wrap-Up polish --- */
+
+.panel.eod-wrapup {
+  position: relative;
+}
+
+/* TODAY — actionable closure */
+.panel.eod-wrapup.done {
+  background: var(--panel-bg);
+  border: 1px solid var(--border);
+}
+
+.panel.eod-wrapup.done h2 {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Emphasize tomorrow handoff */
+.panel.eod-wrapup.done .sub strong {
+  font-weight: 600;
+}
+
+/* YESTERDAY — contextual memory */
+.panel.eod-wrapup.previous {
+  background: color-mix(in srgb, var(--panel-bg) 92%, var(--text) 8%);
+  border: 1px dashed var(--border);
+  opacity: 0.95;
+}
+
+.panel.eod-wrapup.previous h2 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  opacity: 0.85;
+}
+
+/* Yesterday text should read like a note, not a task */
+.panel.eod-wrapup.previous .sub {
+  font-style: italic;
+  opacity: 0.9;
+}
+
+/* Buttons: no primary action on yesterday */
+.panel.eod-wrapup.previous .btn {
+  opacity: 0.85;
+}
+.chip.carryover {
+  background: color-mix(in srgb, var(--warn) 25%, var(--panel-bg));
+  border: 1px dashed var(--border);
+  font-style: italic;
+  opacity: 0.9;
+}
+
+.week-task.carried::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 0;
+  height: 0;
+  border-radius: 25%; 
+  border-top: 10px solid var(--warn);
+  border-left: 10px solid transparent;
+}
+.panel.eow-wrapup {
+  background: color-mix(in srgb, var(--panel-bg) 96%, var(--warning) 4%);
+  border: 1px dashed var(--border);
+}
+
+.panel.eow-wrapup ul.list.minimal {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+.panel.eow-wrapup li {
+  margin: 0.25rem 0;
+}
+
   </style>
 </head>
 <body>
@@ -1532,7 +1610,7 @@ To Do"></textarea>
       <div id="reviewRange" class="kbd"></div>
       <div id="reviewContent" class="list" style="margin-top:8px;"></div>
       <div class="row" style="justify-content:flex-end;">
-        <button id="btnCopyReviewEmail" class="btn">Copy</button>
+        <button id="btnCopyReviewEmail" class="btn secondary">Copy</button>
         <button id="btnCloseReview" class="btn secondary">Close</button>
       </div>
     </div>

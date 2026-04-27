@@ -44,7 +44,7 @@
         }
       }),
       importData: ipc?.importData || (async () => {
-        return new Promise((resolve) => {
+        return new Promise((resolve) => { 
           const input = document.createElement('input');
           input.type = 'file';
           input.accept = '.json,application/json';
@@ -201,6 +201,7 @@ function rerenderCurrentView() {
   const DB_VERSION = 4;
   const STORES = { projects: 'projects', tasks: 'tasks', notes: 'notes', completions: 'completions', settings: 'settings', metrics:'metrics', eod: 'eodWrapups' };
   let db;
+  let dbReady = false;
 
   function openDB() {
     return new Promise((resolve, reject) => {
@@ -280,6 +281,9 @@ function rerenderCurrentView() {
     });
   }
   function tx(storeNames, mode = 'readonly') {
+    if (!dbReady || !db) {
+    throw new Error('IndexedDB not ready yet');
+    }
     const t = db.transaction(storeNames, mode);
     const stores = {};
     for (const s of (Array.isArray(storeNames) ? storeNames : [storeNames])) stores[s] = t.objectStore(s);
@@ -528,7 +532,65 @@ function sumEstimatedMinutes(tasks) {
 function countUnestimatedTasks(tasks) {
   return tasks.filter(t => !Number.isFinite(t.estimatedMinutes)).length;
 }
+function getFirstWorkdayOfWeek(d = new Date(), settings = cache.settings) {
+  const day = d.getDay();
+  const deltaToMonday = (day === 0 ? -6 : 1 - day);
+  const monday = new Date(d);
+  monday.setDate(d.getDate() + deltaToMonday);
+  monday.setHours(0,0,0,0);
 
+  const days = settings.workday.days;
+  const cursor = new Date(monday);
+  while (!days.includes(cursor.getDay())) {
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return todayISO(cursor);
+}
+
+function weeksBetweenISO(startISO, endISO) {
+  const a = new Date(startISO + 'T00:00:00');
+  const b = new Date(endISO + 'T00:00:00');
+  return Math.floor((b - a) / (1000 * 60 * 60 * 24 * 7));
+}
+function isFirstWorkdayOfWeek(d = new Date(), settings = cache.settings) {
+  return todayISO(d) === getFirstWorkdayOfWeek(d, settings);
+}
+  function shouldShowEow(now = new Date(), settings = cache.settings) {
+  // EOW appears only on the first workday of the week
+  return isFirstWorkdayOfWeek(now, settings);
+}
+async function autoCarryOverTasksIfNeeded(force = false) {
+  if (!force && !isFirstWorkdayOfWeek(new Date(), cache.settings)) return;
+
+  const today = todayISO();
+  const firstWorkday = today;
+
+  const nowIso = new Date().toISOString();
+  const { stores } = tx(STORES.tasks, 'readwrite');
+
+  for (const task of cache.tasks) {
+    if (task.status === 'done') continue;
+    if (!task.dueDate) continue;
+    if (task.dueDate >= today) continue;
+ // ✅ allow repeated carryover while task remains incomplete
+
+    // Only carry tasks from the previous week window
+    const due = new Date(task.dueDate + 'T00:00:00');
+    const todayDate = new Date(today + 'T00:00:00');
+    const daysDiff = (todayDate - due) / (1000 * 60 * 60 * 24);
+
+    if (daysDiff > 7) continue; // older backlog: leave untouched
+
+    await put(stores[STORES.tasks], {
+      ...task,
+      carriedFrom: task.carriedFrom ?? task.dueDate,
+      dueDate: firstWorkday,
+      updatedAt: nowIso
+    });
+  }
+
+  await loadAll();
+}
  /** ---------------- Bulk-selection state ----------------------------------- */
   const selection = {
     ids: new Set(),          // selected task ids (global across lists)
@@ -998,7 +1060,11 @@ function getTodoSummaryCounts(tasks) {
 // --- Sidebar task counts (unified, unfiltered) ---
 function getSidebarTaskCounts() {
   const t = todayISO();
-  const open = cache.tasks.filter(x => x.status !== 'done');
+  
+const open = cache.tasks.filter(t =>
+   t.status !== 'done' && shouldShowRecurringTask(t)
+ );
+
 
   return {
     inbox: open.filter(x => !x.projectId).length,
@@ -1181,10 +1247,40 @@ async function getWeeklyProductivityStats() {
 //     </div>
 //   `;
 // }
-function getTodaysCompletionSummary() {
-  const today = todayISO();
-  const start = new Date(today + 'T00:00:00');
-  const end = new Date(today + 'T23:59:59');
+// function getTodaysCompletionSummary() {
+//   const today = todayISO();
+//   const start = new Date(today + 'T00:00:00');
+//   const end = new Date(today + 'T23:59:59');
+
+//   const oneOff = cache.tasks.filter(t =>
+//     t.type === 'one-off' &&
+//     t.completedDate &&
+//     new Date(t.completedDate) >= start &&
+//     new Date(t.completedDate) <= end
+//   );
+
+//   const recurring = cache._allCompletions?.filter(c => {
+//     const d = new Date(c.completedAt);
+//     return d >= start && d <= end;
+//   }) ?? [];
+
+//   return {
+//     oneOff,
+//     recurring
+//   };
+// }
+
+  async function openEodWrapup({ id = todayISO(), readOnly = false, edit = false } = {}) {
+  const existing = await loadEodWrapupById(id);
+  const isToday = id === todayISO();
+  const isReadOnly = readOnly && !edit;
+
+  // Load completions for summary
+  const { stores: cStores } = tx(STORES.completions, 'readonly');
+  const completions = await getAll(cStores[STORES.completions]);
+
+  const start = new Date(id + 'T00:00:00');
+  const end = new Date(id + 'T23:59:59');
 
   const oneOff = cache.tasks.filter(t =>
     t.type === 'one-off' &&
@@ -1193,38 +1289,25 @@ function getTodaysCompletionSummary() {
     new Date(t.completedDate) <= end
   );
 
-  const recurring = cache._allCompletions?.filter(c => {
+  const recurring = completions.filter(c => {
     const d = new Date(c.completedAt);
     return d >= start && d <= end;
-  }) ?? [];
-
-  return {
-    oneOff,
-    recurring
-  };
-}
-
-async function openEodWrapup() {
-  // Load completions if not already cached
-  const { stores } = tx(STORES.completions, 'readonly');
-  cache._allCompletions = await getAll(stores[STORES.completions]);
-
-  const { oneOff, recurring } = getTodaysCompletionSummary();
+  });
 
   const dlg = document.createElement('dialog');
   dlg.className = 'modal';
   dlg.innerHTML = `
     <form method="dialog" class="panel" style="min-width:420px; max-width:520px;">
-      <h2>🌙 Wrap up today</h2>
+      <h2>🌙 Wrap up ${isToday ? 'today' : 'day'}</h2>
 
       <div class="sub" style="margin-bottom:12px;">
-        Here’s what you completed today.
+        Completed:
       </div>
 
       <div class="list" style="max-height:160px; overflow:auto; margin-bottom:12px;">
         ${
           oneOff.length === 0 && recurring.length === 0
-            ? `<div class="empty">No completions logged today.</div>`
+            ? `<div class="empty">No completions logged.</div>`
             : `
               ${oneOff.map(t =>
                 `<div class="item">☑️ ${escapeHTML(t.title)}</div>`
@@ -1239,28 +1322,37 @@ async function openEodWrapup() {
       </div>
 
       <div class="field">
-        <label for="eodLeftOff">Where I left off</label>
-        <textarea id="eodLeftOff" rows="3"
-          placeholder="Anything unfinished or in progress…"></textarea>
+        <label>Where I left off</label>
+        <textarea id="eodLeftOff" rows="3" ${isReadOnly ? 'disabled' : ''}>
+${escapeHTML(existing?.leftOff ?? '')}
+        </textarea>
       </div>
 
       <div class="field">
-        <label for="eodTomorrow">Where I’ll pick up tomorrow</label>
-        <textarea id="eodTomorrow" rows="3"
-          placeholder="What should tomorrow-you start with?"></textarea>
+        <label>Where I’ll pick up</label>
+        <textarea id="eodTomorrow" rows="3" ${isReadOnly ? 'disabled' : ''}>
+${escapeHTML(existing?.tomorrow ?? '')}
+        </textarea>
       </div>
 
       <div class="row" style="justify-content:flex-end; gap:8px; margin-top:12px;">
-        <button class="btn secondary" value="cancel">Cancel</button>
-        <button class="btn primary" value="ok">Save wrap‑up</button>
+        <button class="btn secondary" value="cancel">
+          ${isReadOnly ? 'Close' : 'Cancel'}
+        </button>
+        ${
+          isReadOnly
+            ? ''
+            : `<button class="btn primary" value="ok">
+                 ${existing ? 'Save changes' : 'Save wrap‑up'}
+               </button>`
+        }
       </div>
     </form>
   `;
 
   document.body.appendChild(dlg);
   patchDialogs();
-
-  try { dlg.showModal(); } catch { dlg.setAttribute('open', ''); }
+  try { dlg.showModal(); } catch { dlg.setAttribute('open',''); }
 
   dlg.addEventListener('close', async () => {
     if (dlg.returnValue !== 'ok') {
@@ -1271,29 +1363,27 @@ async function openEodWrapup() {
     const leftOff = dlg.querySelector('#eodLeftOff')?.value.trim() ?? '';
     const tomorrow = dlg.querySelector('#eodTomorrow')?.value.trim() ?? '';
 
-    const id = todayISO();
-    const now = new Date().toISOString();
-
+    const nowIso = new Date().toISOString();
     const { stores } = tx([STORES.eod, STORES.settings], 'readwrite');
 
     await put(stores[STORES.eod], {
       id,
       date: id,
-      completed: {
-        oneOff: oneOff.length,
-        recurring: recurring.length
-      },
+      completed: { oneOff: oneOff.length, recurring: recurring.length },
       leftOff,
       tomorrow,
-      createdAt: now
+      createdAt: nowIso
     });
 
-    await saveSettings({ _lastEodWrapupKey: id });
+    if (isToday) {
+      await saveSettings({ _lastEodWrapupKey: id });
+    }
 
     dlg.remove();
-    render(); // refresh dashboard card
+    render();
   }, { once: true });
 }
+
 async function loadEodWrapupById(id) {
   if (!id) return null;
   const { stores } = tx(STORES.eod, 'readonly');
@@ -1380,6 +1470,7 @@ root.insertAdjacentHTML('beforeend', `
  });
   // Populate asynchronously without blocking the rest of the dashboard 
  (async () => {
+  if (!dbReady) return;
    try {
      const stats = await getWeeklyProductivityStats();
 
@@ -1406,6 +1497,7 @@ root.insertAdjacentHTML('beforeend', `
 
 // Build & render all three heatmaps (Productivity + Sleep + Mood)
   (async () => {
+    if (!dbReady) return;
     try {
       const act = await buildDailyActivityCells({ weeks: 8, includeNotes: false });
       renderHeatmap(document.getElementById('hmProductivity'), act);
@@ -1738,41 +1830,112 @@ if (!cache.settings.compactDashboard) {
       </div>
     `);
   }
-  // --- EOD Wrap-Up card ---
-(function renderEodCard() {
+
+  // --- EOW Wrap-Up ---
+(function renderEowWrapup() {
   const now = new Date();
-  const settings = cache.settings;
+  if (!shouldShowEow(now, cache.settings)) return;
 
-  if (!isWorkdayToday(settings, now)) return;
-  if (hasWrappedUpToday(settings)) return;
+  const today = todayISO(now);
+  const MIN_WEEKS = 2;
 
-  root.insertAdjacentHTML('beforeend', `
-    <div class="panel eod-wrapup">
-      <h2>🌙 Wrap up today</h2>
-      <div class="sub" style="margin: 6px 0 12px;">
-        Take a minute to note where you left off and make tomorrow easier.
+  const carried = cache.tasks.filter(t =>
+    t.status !== 'done' &&
+    t.carriedFrom &&
+    weeksBetweenISO(t.carriedFrom, today) >= MIN_WEEKS
+  );
+
+  if (carried.length === 0) return;
+
+  const rows = carried.map(t => {
+    const w = weeksBetweenISO(t.carriedFrom, today);
+    return `<li>${escapeHTML(t.title)} <span class="sub">— carried ${w} week${w === 1 ? '' : 's'}</span></li>`;
+  }).join('');
+
+  document
+    .getElementById('dashboard-notes-anchor')
+    ?.insertAdjacentHTML('beforebegin', `
+      <div class="panel eow-wrapup">
+        <h2>🧭 Week wrap‑up</h2>
+        <div class="sub" style="margin:6px 0 10px;">
+          Still carrying some work from previous weeks:
+        </div>
+        <ul class="list minimal">
+          ${rows}
+        </ul>
+        <div class="sub muted" style="margin-top:8px;">
+          This is just a check‑in — not a judgement.
+        </div>
       </div>
-      <button id="btnEodWrapup" class="btn primary">
-        Wrap up
-      </button>
+    `);
+})();
+// --- EOD Wrap-Up (Today) ---
+(async function renderTodayEod() {
+  const now = new Date();
+  if (!isWorkdayToday(cache.settings, now)) return;
+
+  const wrapup = await loadTodaysWrapup();
+
+  if (!wrapup) {
+    document
+   .getElementById('dashboard-notes-anchor')
+   ?.insertAdjacentHTML('beforebegin', `
+      <div class="panel eod-wrapup">
+        <h2><svg class="notes-ico" width="1.5em" height="1.5em" viewBox="0 0 24 24" aria-hidden="true"
+          fill="currentColor" focusable="false">
+          <path d="M10 6C10 10.4183 13.5817 14 18 14C19.4386 14 20.7885 13.6203 21.9549 12.9556C21.4738 18.0302 17.2005 22 12 22C6.47715 22 2 17.5228 2 12C2 6.79948 5.9698 2.52616 11.0444 2.04507C10.3797 3.21152 10 4.56142 10 6ZM4 12C4 16.4183 7.58172 20 12 20C14.9654 20 17.5757 18.3788 18.9571 15.9546C18.6407 15.9848 18.3214 16 18 16C12.4772 16 8 11.5228 8 6C8 5.67863 8.01524 5.35933 8.04536 5.04293C5.62119 6.42426 4 9.03458 4 12ZM18.1642 2.29104L19 2.5V3.5L18.1642 3.70896C17.4476 3.8881 16.8881 4.4476 16.709 5.16417L16.5 6H15.5L15.291 5.16417C15.1119 4.4476 14.5524 3.8881 13.8358 3.70896L13 3.5V2.5L13.8358 2.29104C14.5524 2.1119 15.1119 1.5524 15.291 0.835829L15.5 0H16.5L16.709 0.835829C16.8881 1.5524 17.4476 2.1119 18.1642 2.29104ZM23.1642 7.29104L24 7.5V8.5L23.1642 8.70896C22.4476 8.8881 21.8881 9.4476 21.709 10.1642L21.5 11H20.5L20.291 10.1642C20.1119 9.4476 19.5524 8.8881 18.8358 8.70896L18 8.5V7.5L18.8358 7.29104C19.5524 7.1119 20.1119 6.5524 20.291 5.83583L20.5 5H21.5L21.709 5.83583C21.8881 6.5524 22.4476 7.1119 23.1642 7.29104Z"></path>
+  </svg></span> Wrap up today</h2>
+        <div class="sub" style="margin:6px 0 12px;">
+          Take a minute to note where you left off and make tomorrow easier.
+        </div>
+        <button id="btnEodWrapup" class="btn primary">Wrap up</button>
+      </div>
+    `);
+
+    document
+      .getElementById('btnEodWrapup')
+      ?.addEventListener('click', () => openEodWrapup());
+    return;
+  }
+
+  const preview =
+    wrapup.tomorrow?.trim() ||
+    wrapup.leftOff?.trim() ||
+    'Wrapped up for today.';
+
+    document
+   .getElementById('dashboard-notes-anchor')
+   ?.insertAdjacentHTML('beforebegin', `
+    <div class="panel eod-wrapup done">
+      <h2><svg class="notes-ico" width="1.5em" height="1.5em" viewBox="0 0 24 24" aria-hidden="true"
+          fill="currentColor" focusable="false">
+          <path d="M9 1V3H15V1H17V3H21C21.5523 3 22 3.44772 22 4V20C22 20.5523 21.5523 21 21 21H3C2.44772 21 2 20.5523 2 20V4C2 3.44772 2.44772 3 3 3H7V1H9ZM20 8H4V19H20V8ZM15.0355 10.136L16.4497 11.5503L11.5 16.5L7.96447 12.9645L9.37868 11.5503L11.5 13.6716L15.0355 10.136Z"></path>
+  </svg></span> Wrapped up for today</h2>
+      <div class="sub" style="margin-top:6px;">
+        <strong>Tomorrow:</strong> ${escapeHTML(preview)}
+      </div>
+      <div class="row" style="gap:8px; margin-top:10px;">
+        <button class="btn secondary sm" id="btnViewEod">View</button>
+        <button class="btn ghost sm" id="btnEditEod">Edit</button>
+      </div>
     </div>
   `);
 
-  document.getElementById('btnEodWrapup')
-    ?.addEventListener('click', openEodWrapup);
+  document
+    .getElementById('btnViewEod')
+    ?.addEventListener('click', () => openEodWrapup({ readOnly: true }));
+
+  document
+    .getElementById('btnEditEod')
+    ?.addEventListener('click', () => openEodWrapup({ edit: true }));
 })();
+
 // --- Yesterday's EOD Wrap-Up ---
 (async function renderYesterdaysWrapup() {
-  const settings = cache.settings;
   const now = new Date();
+  if (!isWorkdayToday(cache.settings, now)) return;
 
-  // Only show on workdays
-  if (!isWorkdayToday(settings, now)) return;
-
-  // If user already wrapped up today, no need to resurface yesterday
-  if (hasWrappedUpToday(settings)) return;
-
-  const prevId = getPreviousWorkdayISO(settings, now);
+  const prevId = getPreviousWorkdayISO(cache.settings, now);
   if (!prevId) return;
 
   const wrapup = await loadEodWrapupById(prevId);
@@ -1783,18 +1946,71 @@ if (!cache.settings.compactDashboard) {
     wrapup.leftOff?.trim();
 
   if (!preview) return;
-
-  root.insertAdjacentHTML('beforeend', `
+    document
+   .getElementById('dashboard-notes-anchor')
+   ?.insertAdjacentHTML('beforebegin', `
     <div class="panel eod-wrapup previous">
-      <h2>☀️ Yesterday’s wrap‑up</h2>
+      <h2><svg class="notes-ico" width="1.5em" height="1.5em" viewBox="0 0 24 24" aria-hidden="true"
+          fill="currentColor" focusable="false">
+          <path d="M12 18C8.68629 18 6 15.3137 6 12C6 8.68629 8.68629 6 12 6C15.3137 6 18 8.68629 18 12C18 15.3137 15.3137 18 12 18ZM12 16C14.2091 16 16 14.2091 16 12C16 9.79086 14.2091 8 12 8C9.79086 8 8 9.79086 8 12C8 14.2091 9.79086 16 12 16ZM11 1H13V4H11V1ZM11 20H13V23H11V20ZM3.51472 4.92893L4.92893 3.51472L7.05025 5.63604L5.63604 7.05025L3.51472 4.92893ZM16.9497 18.364L18.364 16.9497L20.4853 19.0711L19.0711 20.4853L16.9497 18.364ZM19.0711 3.51472L20.4853 4.92893L18.364 7.05025L16.9497 5.63604L19.0711 3.51472ZM5.63604 16.9497L7.05025 18.364L4.92893 20.4853L3.51472 19.0711L5.63604 16.9497ZM23 11V13H20V11H23ZM4 11V13H1V11H4Z"></path>
+  </svg></span> Yesterday’s wrap‑up</h2>
       <div class="sub" style="margin-top:6px;">
-        ${escapeHTML(preview)}
+       <i> ${escapeHTML(preview)}</i>
+      </div>
+      <div class="row" style="margin-top:10px;">
+        <button class="btn secondary sm" id="btnViewYesterdayEod">View</button>
       </div>
     </div>
   `);
+
+  document
+    .getElementById('btnViewYesterdayEod')
+    ?.addEventListener('click', () =>
+      openEodWrapup({ id: prevId, readOnly: true })
+    );
 })();
 
+async function loadTodaysWrapup() {
+  const id = todayISO();
+  const { stores } = tx(STORES.eod, 'readonly');
+  const all = await getAll(stores[STORES.eod]);
+  return all.find(w => w.id === id) ?? null;
+}
+// --- EOD Wrap-Up helpers ---
+function isWorkdayToday(settings = cache.settings, now = new Date()) {
+  const wd = settings.workday;
+  if (!wd) return false;
+  return wd.days.includes(now.getDay());
+}
+
+function getPreviousWorkdayISO(settings = cache.settings, from = new Date()) {
+  const wd = settings.workday;
+  if (!wd) return null;
+
+  const d = new Date(from);
+  d.setDate(d.getDate() - 1);
+
+  while (true) {
+    if (wd.days.includes(d.getDay())) {
+      return todayISO(d);
+    }
+    d.setDate(d.getDate() - 1);
+  }
+}
+
+async function loadEodWrapupById(id) {
+  if (!id) return null;
+  const { stores } = tx(STORES.eod, 'readonly');
+  const all = await getAll(stores[STORES.eod]);
+  return all.find(w => w.id === id) ?? null;
+}
+
+async function loadTodaysWrapup() {
+  return loadEodWrapupById(todayISO());
+}
+
   root.insertAdjacentHTML('beforeend', `
+    <div id="dashboard-notes-anchor"></div>
     <div class="panel">
         <h2>
         <span class="notes-ico-wrap">
@@ -1828,6 +2044,7 @@ renderNotes($('#notesList'), dashboardNotes);
 
 // === Trends (Phase 2: SVG line chart) ==========================
 (async () => {
+  if (!dbReady) return;
   try {
     const prod = await getWeeklyProductivity(8);
     const sleep = await getWeeklyMetric('sleep', 8);
@@ -2098,8 +2315,8 @@ btnToggle?.addEventListener('click', () => {
           <div class="row">
             <button class="btn" id="btnAddTaskProject">+ Task</button>
             <button class="btn secondary" id="btnAddNoteProject">+ Note</button>
-            <button class="btn ghost" id="btnEditProject">Edit</button>
-            <button class="btn danger" id="btnDeleteProject">Delete</button>
+            <button class="btn secondary" id="btnEditProject">Edit</button>
+            <button class="btn secondary danger" id="btnDeleteProject">Delete</button>
           </div>
         </div>
           <div class="panel">
@@ -2129,6 +2346,14 @@ if (cal) {
   }
   
 function renderTaskCollection(container, tasks, opts = {}) {
+  const visible = tasks.filter(task => {
+    // if (task.status === 'done') return false;   
+  // Completed view needs done tasks
+  if (!opts.showCompleted && task.status === 'done') return false;
+ if (!shouldShowRecurringTask(task)) return false;
+  return true;
+});
+
   // Back-compat: if a boolean was passed earlier, interpret it as recurringView
   if (typeof opts === 'boolean') opts = { recurringView: opts };
   const {
@@ -2141,17 +2366,15 @@ function renderTaskCollection(container, tasks, opts = {}) {
 // Keep order for Shift-range selection
   const order = [];
 
-    tasks.forEach(task => {
+    visible.forEach(task => {
       order.push(task.id);
       const statusClass = task.status === 'done' ? 'status-done' :
                           task.status === 'in-progress' ? 'status-in' :
                           task.status === 'blocked' ? 'status-blocked' : 'status-todo';
       const proj = cache.projects.find(p => p.id === task.projectId);
       const typeChip = task.type === 'recurring' ? `<span class="chip"><i class="ri-loop-right-fill"></i> ${task.recurrence?.pattern || 'weekly'}</span>` : '';      
-      const due = task.dueDate
-  ? `<span class="chip">Due ${fmt(task.dueDate)}</span>${renderStartNowChip(task)}`
-  : '';
-     
+      const due = task.dueDate ? `<span class="chip">Due ${fmt(task.dueDate)}</span>${task.carriedFrom  ? `<span class="chip carryover">carried from ${fmt(task.carriedFrom)}</span>`  : ''}${renderStartNowChip(task)}`: '';
+   
 // Monthly bundle progress (if present)
     let bundleChip = '';
     let bundlePanel = '';
@@ -2367,8 +2590,40 @@ item.querySelectorAll('.bundle-check').forEach(chk => {
 // Make sure row highlights match current selection state
   refreshContainerSelectionStyles(container);
 
-
   }
+  function shouldShowRecurringTask(task, now = new Date(), settings = cache.settings) {
+
+  // Non-recurring tasks always show unless filtered elsewhere
+  if (task.type !== 'recurring') return true;
+
+ // ✅ Monthly bundle tasks stay visible until ALL items are complete
+ if (task.bundle?.type === 'monthly') {
+   const nowDate = new Date(now);
+   const ym = `${nowDate.getFullYear()}-${String(nowDate.getMonth()+1).padStart(2,'0')}`;
+   const items = task.bundle.items ?? [];
+   const history = task.bundle.history?.[ym] ?? [];
+   const completedKeys = new Set(history.map(h => h.key));
+   return completedKeys.size < items.length;
+ }
+
+  // If never completed, always show
+  if (!task.completedDate) return true;
+
+  // If completed, only re-show on or after the first workday of the next cycle
+  const today = new Date(todayISO(now) + 'T00:00:00');
+
+  // task.dueDate already points at the next cycle
+  if (!task.dueDate) return true;
+
+  let cursor = new Date(task.dueDate + 'T00:00:00');
+
+  // Respect workdays
+  while (!settings.workday.days.includes(cursor.getDay())) {
+    cursor.setDate(cursor.getDate() + 1);
+  }
+
+  return today >= cursor;
+}
 function openCompletedDateEditor(rowEl, task) {
   const anchor = rowEl.querySelector('.btn-edit-completed-date');
   if (!anchor) return;
@@ -2519,6 +2774,8 @@ col.addEventListener('drop', async (e) => {
         const est = formatEstimatedMinutes(task.estimatedMinutes);
 
         card.className = `week-task priority-${pri}`;
+        card.style.position = 'relative';
+        if (task.carriedFrom) card.classList.add('carried');
         if (isTaskInStartWindow(task)) card.classList.add('start-now');
         card.draggable = true;
 
@@ -2779,7 +3036,7 @@ el.querySelector('.note-content')?.addEventListener('click', (e) => {
   async function markTaskDone(task) {
     if (task.type === 'recurring') { await logRecurringCompletion(task); return; }
     const now = new Date().toISOString();
-    await createOrUpdateTask({ ...task, status: 'done', completedDate: now });
+    await createOrUpdateTask({ ...task, status: 'done', completedDate: now, carriedFrom: null });
   }
   async function undoTask(task) {
     await createOrUpdateTask({ ...task, status: 'todo', completedDate: null });
@@ -2817,7 +3074,7 @@ async function logRecurringCompletion(task, note = null) {
     completedDate: completedAt.toISOString(),
     startDate: (pattern === 'monthly' && nextStart) ? toISODate(nextStart) : (task.startDate || null),
     dueDate: toISODate(nextDue),
-
+    carriedFrom: null,
     updatedAt: new Date().toISOString()
   };
   const { stores } = tx([STORES.tasks, STORES.completions], 'readwrite');
@@ -2961,7 +3218,7 @@ async function renderRecurring(root) {
       <div class="row" style="justify-content:space-between;">
         <h2>Recurring <span class="sub">(${items.length})</span></h2>
         <div class="row">
-          <button id="btnAddTaskRecurring" class="btn">+ New Task</button>
+          <button id="btnAddTaskRecurring" class="btn secondary">+ New Task</button>
           <button id="btnAddNoteRecurring" class="btn secondary">+ Note</button>
         </div>
       </div>
@@ -3026,7 +3283,9 @@ async function renderCompleted(root) {
   `);
 
     // Reuse task row renderer for one‑offs (read-only actions still appear; that's fine)
-    renderTaskCollection(document.getElementById('completedOneOff'), oneOffs);
+    renderTaskCollection(document.getElementById('completedOneOff'), 
+oneOffs, { showCompleted: true }
+);
 
     // Build a simple list for recurring logs
     const list = document.getElementById('completedRecurring');
@@ -4321,7 +4580,7 @@ root.insertAdjacentHTML('beforeend', `
             <input type="checkbox" id="chkIncludeNotes" ${reviewState.includeNotes?'checked':''}/>
           </div>
           <div class="row">
-            <button id="btnCopyWeekEmail" class="btn">Copy</button>
+            <button id="btnCopyWeekEmail" class="btn secondary">Copy</button>
             <button id="btnExportWeekCSV" class="btn secondary">Export</button>
             </div>
 <!-- Spacer pushes the dialog action right -->
@@ -4903,6 +5162,7 @@ function openInlineLogEditor(rowEl, task, onSaved) {
       patchDialogs();
 
       db = await openDB();
+      dbReady = true;
       if (!cache.settings || !cache.settings.id) {
         await saveSettings({
           id: 'main',
@@ -4927,7 +5187,10 @@ function openInlineLogEditor(rowEl, task, onSaved) {
         });
       }
       await loadAll();
- 
+
+// ✅ Auto-carry overdue tasks from last workweek to this week (runs once on first workday)
+await autoCarryOverTasksIfNeeded();
+
 // Back-compat: ensure workday settings exist
 if (!cache.settings.workday) {
   await saveSettings({
@@ -5214,6 +5477,15 @@ updateFiltersButtonLabel();
         const v = $('#version'); if (v) v.textContent = 'v?';
       }
 
+// ================= DEV-ONLY DEBUG HELPERS =================
+// Allows manual testing of weekly carryover without waiting for Monday
+window.__ptForceCarryover = async () => {
+  console.log('[dev] forcing weekly carryover');
+  await autoCarryOverTasksIfNeeded(true);
+  render();
+};
+
+
       startNotificationLoop();
       setView({ type: 'dashboard' });
 
@@ -5222,31 +5494,6 @@ updateFiltersButtonLabel();
       alert('Failed to initialize: ' + (err?.message || String(err)));
     }
   }
-
-function getTodayEodKey(d = new Date()) {
-  return todayISO(d);
-}
-
-function hasWrappedUpToday(settings = cache.settings) {
-  return settings._lastEodWrapupKey === getTodayEodKey();
-}
-
-function isWorkdayToday(settings = cache.settings, now = new Date()) {
-  const wd = settings.workday;
-  if (!wd) return false;
-  return wd.days.includes(now.getDay());
-}
-
-// DEV ONLY — expose helpers for debugging
-window.__ptCache = cache;
-window.__checkAndNotify = checkAndNotify;
-window.__shouldNotifyEod = shouldNotifyEod;
-window.__todayISO = todayISO;
-
-// DEV ONLY: pretend today is tomorrow
-cache.settings._lastEodWrapupKey = null;
-render();
-
 
   // Error surfacing
   window.addEventListener('error', (e) => { console.error('Global error:', e.error || e.message); });
