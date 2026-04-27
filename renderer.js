@@ -23,7 +23,7 @@
     };
 
     return {
-      getAppInfo: ipc?.getAppInfo || (async () => ({ name: 'PaperTrail', version: '1.0.0', platform: 'browser' })),
+      getAppInfo: ipc?.getAppInfo || (async () => ({ name: 'PaperTrail', version: '1.0.1', platform: 'browser' })),
       openExternal: ipc?.openExternal || (async (url) => { window.open(url, '_blank'); return true; }),
       notify: ipc?.notify || browserNotify,
       exportData: ipc?.exportData || (async (data) => {

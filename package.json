@@ -4,7 +4,7 @@
   "description": "Friction-Free Task & Project Tracking",
   "keywords": [],
   "main": "./main.js",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "author": "Kelci Griffin",
   "scripts": {
     "start": "electron-forge start",
